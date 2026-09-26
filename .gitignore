@@ -9,6 +9,7 @@ dist/
 
 # Env / secrets
 .env
+.env.example
 
 # Generated data & model artifacts (regenerate via the scripts/ pipeline)
 data/raw/*
