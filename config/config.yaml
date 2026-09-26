@@ -22,7 +22,7 @@ study_years:
   - {year: 2026, start: "2026-04-01", end: "2026-05-31"}
 
 gee:
-  project_id: "nagpur-uhi-472913"     # override via env var GEE_PROJECT_ID
+  project_id: "GEE_PROJECT_ID"     # override via env var GEE_PROJECT_ID
   landsat_collections:
     l8_l9_sr: "LANDSAT/LC08/C02/T1_L2"  # Landsat 8 Collection 2 Level-2 (also use LC09 for L9)
   sentinel2_collection: "COPERNICUS/S2_SR_HARMONIZED"
