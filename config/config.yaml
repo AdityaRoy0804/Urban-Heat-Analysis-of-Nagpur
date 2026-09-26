@@ -1,0 +1,75 @@
+# Nagpur UHI platform - central configuration
+# All paths are relative to the repo root unless absolute.
+
+aoi:
+  name: "Nagpur Municipal Corporation"
+  # Approximate bounding box (lon_min, lat_min, lon_max, lat_max), WGS84.
+  # Replace with the actual NMC boundary polygon (GeoJSON) before production use -
+  # a bbox is a coarse stand-in and will include some non-Nagpur pixels at the edges.
+  bbox: [78.95, 21.02, 79.22, 21.25]
+  boundary_geojson: "data/raw/nagpur_boundary.geojson"  # optional precise AOI polygon
+
+crs:
+  processing_epsg: 32644   # UTM Zone 44N - metric CRS for Nagpur, used for all raster math
+  storage_epsg: 4326       # WGS84 - used for web map serving
+
+study_years:
+  # 4-5+ time points across ~10 years, same season each year to minimise phenological noise.
+  # Season chosen: pre-monsoon summer (Apr-May), when Nagpur's UHI signal is strongest.
+  - {year: 2017, start: "2017-04-01", end: "2017-05-31"}
+  - {year: 2020, start: "2020-04-01", end: "2020-05-31"}
+  - {year: 2023, start: "2023-04-01", end: "2023-05-31"}
+  - {year: 2026, start: "2026-04-01", end: "2026-05-31"}
+
+gee:
+  project_id: "nagpur-uhi-472913"     # override via env var GEE_PROJECT_ID
+  landsat_collections:
+    l8_l9_sr: "LANDSAT/LC08/C02/T1_L2"  # Landsat 8 Collection 2 Level-2 (also use LC09 for L9)
+  sentinel2_collection: "COPERNICUS/S2_SR_HARMONIZED"
+  sentinel1_collection: "COPERNICUS/S1_GRD"
+  max_cloud_cover_pct: 20
+
+copernicus_dataspace:
+  # Copernicus Data Space Ecosystem (CDSE) - independent of GEE.
+  # Used for: Copernicus DEM (GLO-30) terrain context fed directly into the scenario model,
+  # and optionally as a redundant Sentinel-1/2 source for cross-validation.
+  token_url: "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
+  odata_base_url: "https://catalogue.dataspace.copernicus.eu/odata/v1"
+  process_api_base_url: "https://sh.dataspace.copernicus.eu"
+  # NOTE: verify the exact DEM collection/product-type name against current CDSE docs
+  # before running - Copernicus data-catalogue naming has changed over time.
+  dem_collection_name: "COP-DEM_GLO-30-DGED"
+  client_id_env: "CDSE_CLIENT_ID"
+  client_secret_env: "CDSE_CLIENT_SECRET"
+
+paths:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  models_dir: "data/models"
+
+lulc:
+  classes: ["water", "vegetation", "built_up", "bare_open"]
+  # Empirical thresholds used by the rule-based fallback classifier (features/lulc.py).
+  # These are documented, adjustable, and meant to be replaced/validated with a trained
+  # classifier once labeled samples for Nagpur are available.
+  ndvi_vegetation_min: 0.30
+  ndwi_water_min: 0.30
+  ndbi_built_up_min: 0.00
+
+hotspot:
+  window_size: 3          # odd integer >=3, side length of the square neighbourhood (pixels)
+  confidence_levels: [1.65, 1.96, 2.58]   # 90%, 95%, 99% two-tailed z thresholds
+  persistent_threshold: 0.6  # fraction of study years a pixel must be "hot" (>=95%) to be "persistent"
+
+model:
+  type: "random_forest"       # "random_forest" | "gradient_boosting"
+  n_estimators: 300
+  max_depth: 12
+  min_samples_leaf: 5
+  random_state: 42
+  test_size: 0.2
+  spatial_block_size_m: 500   # block size for spatial train/test splitting, avoids autocorrelation leakage
+
+scenario:
+  n_analog_zones: 5
+  feature_columns: ["ndvi", "ndbi", "ndwi", "sar_vv_vh_ratio", "elevation_m", "slope_deg"]

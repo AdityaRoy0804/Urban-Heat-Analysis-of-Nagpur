@@ -1,0 +1,35 @@
+# Core - required to run the pure-Python analysis/ML modules and tests
+numpy>=1.26
+pandas>=2.0
+scipy>=1.11
+scikit-learn>=1.3
+pyyaml>=6.0
+
+# Data acquisition (network required; not needed to run tests)
+# Default, no-cost path - free public STAC catalogs, no billing account:
+pystac-client>=0.8
+planetary-computer>=1.0    # optional: only needed for --stac-provider=planetary_computer
+requests>=2.31             # used by the CDSE client (Copernicus DEM) - always free, no billing
+
+# Optional alternative acquisition path - Google Earth Engine (needs a
+# registered, free-for-noncommercial-use Google Cloud project; see README):
+earthengine-api>=0.1.390
+geemap>=0.32
+
+# Raster / geospatial I/O (needed for scripts/02+, not for the unit tests)
+rasterio>=1.3
+shapely>=2.0
+geopandas>=0.14
+
+# Explainability
+shap>=0.44
+
+# API + serving
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+titiler[server]>=0.18   # raster tile server for the frontend map layers
+
+# Dev / testing
+pytest>=8.0
+httpx2                 # required by starlette.testclient in newer starlette versions

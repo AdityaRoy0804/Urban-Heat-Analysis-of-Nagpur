@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nagpur Urban Heat Island Platform</title>
+<meta name="description" content="Multi-temporal urban heat island analysis and explainable scenario modelling for Nagpur.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌡️</text></svg>">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#0f1115; --panel:#161923; --border:#2a2e3a; --text:#e8e9ec; --muted:#9aa0ab; --accent:#3b8bd4; --warn:#d85a30; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  #layout { display:grid; grid-template-columns: 1fr 380px; height:100vh; }
+  #map { height:100%; }
+  #panel { background:var(--panel); border-left:1px solid var(--border); padding:16px; overflow-y:auto; }
+  h1 { font-size:16px; margin:0 0 4px; }
+  h2 { font-size:13px; color:var(--muted); margin:20px 0 8px; text-transform:uppercase; letter-spacing:.04em; }
+  p.sub { font-size:12px; color:var(--muted); margin:0 0 16px; }
+  select, button, input[type=range] { width:100%; padding:8px; border-radius:6px; border:1px solid var(--border); background:#0d0f14; color:var(--text); font-size:13px; }
+  button { background:var(--accent); border:none; cursor:pointer; font-weight:600; margin-top:8px; }
+  button:hover { opacity:.9; }
+  .row { margin-bottom:10px; }
+  .card { background:#0d0f14; border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:12px; }
+  .metric { font-size:24px; font-weight:600; }
+  .metric.warn { color:var(--warn); }
+  .caveat { font-size:11px; color:var(--muted); line-height:1.5; border-top:1px solid var(--border); padding-top:8px; margin-top:8px; }
+  .contrib-bar { height:8px; border-radius:4px; background:var(--border); overflow:hidden; margin:4px 0; }
+  .contrib-fill { height:100%; background:var(--warn); }
+  .contrib-row { font-size:12px; margin-bottom:6px; }
+  #timeSliderLabel { font-size:12px; color:var(--muted); text-align:center; margin-top:4px; }
+  .status { font-size:11px; color:var(--muted); }
+</style>
+</head>
+<body>
+<div id="layout">
+  <div id="map"></div>
+  <div id="panel">
+    <h1>Nagpur UHI explorer</h1>
+    <p class="sub">Click a zone on the map, or pick one below, to see its history and simulate a land-cover scenario.</p>
+
+    <h2>Study year</h2>
+    <input type="range" id="timeSlider" min="0" max="4" step="1" value="4">
+    <div id="timeSliderLabel">2026</div>
+
+    <h2>Zone</h2>
+    <select id="zoneSelect">
+      <option value="">Select a zone…</option>
+    </select>
+    <div id="historyCard" class="card" style="display:none;">
+      <canvas id="historyChart" height="140"></canvas>
+      <p class="status" id="hotspotStatus"></p>
+    </div>
+
+    <h2>Scenario: what if land cover changes here?</h2>
+    <div class="row">
+      <select id="scenarioClass">
+        <option value="built_up">New construction (e.g. a mall, housing)</option>
+        <option value="vegetation">Vegetation / green cover increase</option>
+        <option value="bare_open">Cleared to bare/open land</option>
+      </select>
+    </div>
+    <button id="runScenario">Estimate impact</button>
+
+    <div class="card" id="scenarioCard" style="display:none;">
+      <div class="row">
+        <div class="metric" id="shiftValue">--</div>
+        <div class="status">estimated LST shift (uncertainty band shown below)</div>
+      </div>
+      <p class="status" id="uncertaintyBand"></p>
+      <h2 style="margin-top:12px;">Why (explanation)</h2>
+      <div id="contributions"></div>
+      <p class="status" id="hotspotContext"></p>
+      <p class="caveat" id="caveatText"></p>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = "http://localhost:8000";
+
+const map = L.map('map').setView([21.1458, 79.0882], 11);  // Nagpur
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors',
+  maxZoom: 18,
+}).addTo(map);
+
+let historyChart = null;
+let activeHighlight = null;
+const zoneLayers = {};
+
+async function fetchJSON(path, options) {
+  const res = await fetch(`${API_BASE}${path}`, options);
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `Request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+async function loadZoneHistory(zoneId) {
+  try {
+    const history = await fetchJSON(`/zones/${zoneId}/history`);
+    document.getElementById('historyCard').style.display = 'block';
+    document.getElementById('hotspotStatus').textContent = history.is_persistent_hotspot
+      ? `Persistent heat hotspot: hot in ${(history.hotspot_frequency * 100).toFixed(0)}% of study years.`
+      : `Not a persistent hotspot (hot in ${(history.hotspot_frequency * 100).toFixed(0)}% of study years).`;
+
+    const ctx = document.getElementById('historyChart');
+    if (historyChart) historyChart.destroy();
+    historyChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: history.years,
+        datasets: [
+          { label: 'LST (°C)', data: history.lst_celsius, borderColor: '#d85a30', tension: 0.25 },
+          { label: 'NDVI (×20, for scale)', data: history.ndvi.map(v => v * 20), borderColor: '#3b8bd4', tension: 0.25 },
+        ],
+      },
+      options: { plugins: { legend: { labels: { color: '#e8e9ec', font: { size: 10 } } } },
+                 scales: { x: { ticks: { color: '#9aa0ab' } }, y: { ticks: { color: '#9aa0ab' } } } },
+    });
+
+    if (zoneLayers[zoneId]) {
+      if (activeHighlight) map.removeLayer(activeHighlight);
+      activeHighlight = L.rectangle(zoneLayers[zoneId].getBounds(), {
+        color: '#ffea00',
+        weight: 3,
+        fillOpacity: 0.2,
+      }).addTo(map);
+    }
+  } catch (err) {
+    console.error(err);
+    alert(`Could not load zone history: ${err.message}`);
+  }
+}
+
+async function runScenario(zoneId) {
+  const scenarioClass = document.getElementById('scenarioClass').value;
+  try {
+    const result = await fetchJSON('/scenario/simulate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ zone_id: zoneId, scenario_land_cover_class: scenarioClass, k_analogs: 5 }),
+    });
+
+    document.getElementById('scenarioCard').style.display = 'block';
+    const shiftEl = document.getElementById('shiftValue');
+    const shift = result.estimated_shift_celsius;
+    shiftEl.textContent = `${shift >= 0 ? '+' : ''}${shift.toFixed(1)} °C`;
+    shiftEl.className = 'metric' + (shift > 0.5 ? ' warn' : '');
+
+    document.getElementById('uncertaintyBand').textContent =
+      `Range observed across ${result.analog_zone_ids.length} comparable analog zones: ` +
+      `${result.uncertainty_band_celsius[0].toFixed(1)}–${result.uncertainty_band_celsius[1].toFixed(1)} °C`;
+
+    const maxAbs = Math.max(...result.top_contributions.map(c => Math.abs(c.contribution_celsius)), 0.01);
+    document.getElementById('contributions').innerHTML = result.top_contributions.slice(0, 5).map(c => `
+      <div class="contrib-row">
+        ${c.feature}: ${c.contribution_celsius >= 0 ? '+' : ''}${c.contribution_celsius.toFixed(2)} °C
+        <div class="contrib-bar"><div class="contrib-fill" style="width:${100 * Math.abs(c.contribution_celsius) / maxAbs}%"></div></div>
+      </div>`).join('');
+
+    document.getElementById('hotspotContext').textContent = result.historical_hotspot_context;
+    document.getElementById('caveatText').textContent = result.caveat_text;
+  } catch (err) {
+    console.error(err);
+    alert(`Could not run scenario: ${err.message}`);
+  }
+}
+
+document.getElementById('zoneSelect').addEventListener('change', (e) => {
+  if (e.target.value) loadZoneHistory(e.target.value);
+});
+document.getElementById('runScenario').addEventListener('click', () => {
+  const zoneId = document.getElementById('zoneSelect').value;
+  if (!zoneId) { alert('Select a zone first.'); return; }
+  runScenario(zoneId);
+});
+
+const YEARS = [2017, 2020, 2023, 2026];
+document.getElementById('timeSlider').addEventListener('input', (e) => {
+  document.getElementById('timeSliderLabel').textContent = YEARS[e.target.value];
+});
+
+async function initZones() {
+  try {
+    const data = await fetchJSON('/zones');
+    const select = document.getElementById('zoneSelect');
+    if (!data.zones || data.zones.length === 0) return;
+
+    select.innerHTML = '<option value="">Select a zone…</option>';
+
+    // Nagpur bounding box coordinates [lon_min, lat_min, lon_max, lat_max]
+    const minLat = 21.02, maxLat = 21.25, minLon = 78.95, maxLon = 79.22;
+    const nRows = 20, nCols = 20;
+    const rowStep = (maxLat - minLat) / nRows;
+    const colStep = (maxLon - minLon) / nCols;
+
+    data.zones.forEach((z) => {
+      const opt = document.createElement('option');
+      opt.value = z.zone_id;
+      const tag = z.is_persistent_hotspot ? ' 🔥 Hotspot' : '';
+      const lulc = z.latest_lulc_class ? ` [${z.latest_lulc_class}]` : '';
+      const temp = z.latest_lst_celsius ? ` - ${z.latest_lst_celsius}°C` : '';
+      opt.textContent = `${z.zone_id}${tag}${lulc}${temp}`;
+      select.appendChild(opt);
+
+      if (typeof z.row === 'number' && typeof z.col === 'number') {
+        const north = maxLat - (z.row * rowStep);
+        const south = north - rowStep;
+        const west = minLon + (z.col * colStep);
+        const east = west + colStep;
+
+        const bounds = [[south, west], [north, east]];
+        const color = z.is_persistent_hotspot ? '#d85a30' : (z.latest_lulc_class === 'vegetation' ? '#2e7d32' : '#3b8bd4');
+        const rect = L.rectangle(bounds, {
+          color: color,
+          weight: 1,
+          opacity: 0.5,
+          fillOpacity: z.is_persistent_hotspot ? 0.35 : 0.12,
+        }).addTo(map);
+
+        rect.bindTooltip(`${z.zone_id}${tag}<br/>LST: ${z.latest_lst_celsius || '--'}°C<br/>Land: ${z.latest_lulc_class || '--'}`);
+        rect.on('click', () => {
+          select.value = z.zone_id;
+          loadZoneHistory(z.zone_id);
+        });
+        zoneLayers[z.zone_id] = rect;
+      }
+    });
+
+    // Default select first persistent hotspot or first zone
+    const defaultZone = data.zones.find(z => z.is_persistent_hotspot) || data.zones[0];
+    if (defaultZone) {
+      select.value = defaultZone.zone_id;
+      loadZoneHistory(defaultZone.zone_id);
+    }
+  } catch (err) {
+    console.warn('Could not populate zones list from API:', err);
+  }
+}
+
+// Wait for all external scripts (Chart.js) to be fully parsed before running
+if (document.readyState === 'complete') {
+  initZones();
+} else {
+  window.addEventListener('load', initZones);
+}
+</script>
+</body>
+</html>
